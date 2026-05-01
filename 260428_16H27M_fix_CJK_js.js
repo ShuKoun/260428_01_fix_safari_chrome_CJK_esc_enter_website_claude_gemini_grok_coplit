@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Universal IME Fix for Safari & Chrome (Claude/Gemini/Copilot/Grok)
+// @name         Universal IME Fix for Safari/Chrome/Firefox (Claude/Gemini/Copilot/Grok)
 // @namespace    http://tampermonkey.net/
-// @version      2.1
-// @description  Fix IME Enter/Esc key conflicts on AI chat sites. v2.1 fixes Gemini rename dialog by tracking Enter-during-composition and blocking the corresponding keyup.
+// @version      2.2
+// @description  Fix IME Enter/Esc key conflicts on AI chat sites. v2.2 adds Firefox support (event.key is "Process" during IME).
 // @author       Shu (Claude 01 account)
 // @homepage     https://claude.ai/chat/dcf4c280-ca9a-4c8c-9daa-07e01b326470
 // @match        https://*.claude.ai/*
@@ -19,7 +19,7 @@
 // @run-at       document-start
 // ==/UserScript==
 
-// Created: 2026-04-28, updated: 2026-04-29 (v2.1)
+// Created: 2026-04-28, updated: 2026-04-29 (v2.2 - Firefox compatibility)
 
 (function() {
   'use strict';
@@ -30,11 +30,24 @@
   const ENTER_THRESHOLD_MS = 20;
   const ESC_THRESHOLD_MS = 20;
 
-  // CRITICAL FIX (v2.1): track whether the most recent Enter keydown
-  // happened during IME composition. If yes, block the matching keyup
-  // even if isComposing is already false by then.
   let pendingImeEnterKeyup = false;
   let pendingImeEscKeyup = false;
+
+  // ---------- Cross-browser key detection ----------
+  // Firefox: event.key === "Process" during IME, but event.code === "Enter"
+  // Chrome:  event.key === "Enter" during IME, event.code === "Enter"
+  // Safari:  similar to Chrome
+  function isEnterKey(event) {
+    return event.code === 'Enter' ||
+           event.key === 'Enter' ||
+           event.keyCode === 13;
+  }
+
+  function isEscapeKey(event) {
+    return event.code === 'Escape' ||
+           event.key === 'Escape' ||
+           event.keyCode === 27;
+  }
 
   // ---------- Detection ----------
   function isIMEActiveForEnter() {
@@ -49,13 +62,18 @@
     return false;
   }
 
-  // ---------- Universal blocker ----------
+  // ---------- Universal handler ----------
   function handleKeyEvent(event) {
     // ----- KEYDOWN -----
     if (event.type === 'keydown') {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        // keyCode 229 means "IME is processing this key" — definitive signal
-        const isImeEnter = isIMEActiveForEnter() || event.keyCode === 229;
+      if (isEnterKey(event) && !event.shiftKey) {
+        // keyCode 229 = "IME is processing"; isComposing true = same;
+        // also: Firefox uses event.key === "Process" — check that too
+        const isImeEnter =
+          isIMEActiveForEnter() ||
+          event.keyCode === 229 ||
+          event.key === 'Process';
+
         if (isImeEnter) {
           pendingImeEnterKeyup = true;
           event.stopImmediatePropagation();
@@ -63,8 +81,12 @@
           return;
         }
       }
-      if (event.key === 'Escape') {
-        const isImeEsc = isIMEActiveForEsc() || event.keyCode === 229;
+      if (isEscapeKey(event)) {
+        const isImeEsc =
+          isIMEActiveForEsc() ||
+          event.keyCode === 229 ||
+          event.key === 'Process';
+
         if (isImeEsc) {
           pendingImeEscKeyup = true;
           event.stopImmediatePropagation();
@@ -76,13 +98,13 @@
 
     // ----- KEYUP (the critical Gemini-rename fix) -----
     if (event.type === 'keyup') {
-      if (event.key === 'Enter' && pendingImeEnterKeyup) {
+      if (isEnterKey(event) && pendingImeEnterKeyup) {
         pendingImeEnterKeyup = false;
         event.stopImmediatePropagation();
         event.preventDefault();
         return;
       }
-      if (event.key === 'Escape' && pendingImeEscKeyup) {
+      if (isEscapeKey(event) && pendingImeEscKeyup) {
         pendingImeEscKeyup = false;
         event.stopImmediatePropagation();
         event.preventDefault();
@@ -92,7 +114,8 @@
 
     // ----- KEYPRESS -----
     if (event.type === 'keypress') {
-      if (event.key === 'Enter' && (isIMEActiveForEnter() || event.keyCode === 229)) {
+      if (isEnterKey(event) &&
+          (isIMEActiveForEnter() || event.keyCode === 229 || event.key === 'Process')) {
         event.stopImmediatePropagation();
         event.preventDefault();
         return;
@@ -108,14 +131,13 @@
   function compositionEndHandler() {
     isComposing = false;
     lastCompositionEndTime = Date.now();
-    // Clear stale pending flags after a short delay (safety net)
     setTimeout(() => {
       pendingImeEnterKeyup = false;
       pendingImeEscKeyup = false;
     }, 100);
   }
 
-  // ---------- Attach listeners on multiple targets and phases ----------
+  // ---------- Top-level listeners ----------
   function attachListeners(target) {
     ['keydown', 'keypress', 'keyup'].forEach(eventType => {
       target.addEventListener(eventType, handleKeyEvent, true);
@@ -132,7 +154,7 @@
   attachCompositionListeners(window);
   attachCompositionListeners(document);
 
-  // ---------- Element-level attachment for dynamic inputs (Gemini rename) ----------
+  // ---------- Element-level attachment for dynamic inputs ----------
   const attachedElements = new WeakSet();
 
   function isInputLike(el) {
