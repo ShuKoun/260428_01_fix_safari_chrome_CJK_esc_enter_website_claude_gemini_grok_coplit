@@ -15,6 +15,7 @@
 // @match        https://www.office.com/*
 // @match        https://grok.com/*
 // @match        https://x.com/i/grok*
+// @match        https://www.meta.ai/*
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
